@@ -110,14 +110,17 @@ def main() -> int:
 
     # CSV 대비 Parquet이 몇 배 유리한지로 환산해 결과를 해석한다
     stat = scaled.set_index("format")
+    gain = {
+        key: stat.loc["CSV", key] / stat.loc["Parquet", key]
+        for key in ("read_ms", "write_ms", "size_kb")
+    }
     print(
         f"\n  → 확대 데이터({len(scaled_df):,}행) 기준 Parquet 우위: "
-        f"읽기 {stat.loc['CSV', 'read_ms'] / stat.loc['Parquet', 'read_ms']:.1f}배 빠름, "
-        f"쓰기 {stat.loc['CSV', 'write_ms'] / stat.loc['Parquet', 'write_ms']:.1f}배 빠름, "
-        f"파일 크기 {stat.loc['CSV', 'size_kb'] / stat.loc['Parquet', 'size_kb']:.1f}배 작음"
+        f"읽기 {gain['read_ms']:.1f}배 빠름, 쓰기 {gain['write_ms']:.1f}배 빠름, "
+        f"파일 크기 {gain['size_kb']:.1f}배 작음"
     )
     print(
-        "     (72행 소량 구간에서는 CSV가 근소하게 빨랐다 — "
+        f"     ({len(df)}행 소량 구간에서는 CSV가 근소하게 빨랐다 — "
         "Parquet의 이점은 데이터가 커질수록 드러난다)"
     )
 
