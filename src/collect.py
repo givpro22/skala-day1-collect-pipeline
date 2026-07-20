@@ -3,6 +3,10 @@
 순차 호출 대비 전체 소요 시간이 '가장 느린 한 개'로 수렴하는 것이 핵심이다.
 개별 요청 실패가 전체 파이프라인을 중단시키지 않도록
 asyncio.gather(return_exceptions=True) 와 요청 단위 예외 처리를 함께 사용한다.
+
+실패 대응은 두 단계다.
+    1) 재시도 : 같은 주소로 지수 백오프(0.5→1.0→2.0초) 재요청 — 일시적 오류용
+    2) 미러   : 재시도까지 실패하면 대체 주소로 전환 — 지속적 차단·장애용
 """
 
 from __future__ import annotations
@@ -15,44 +19,132 @@ from typing import Any
 
 import httpx
 
-from src.config import API_ENDPOINTS, RAW_RESPONSE_JSON, REQUEST_TIMEOUT
+from src.config import (
+    API_ENDPOINTS,
+    API_MIRRORS,
+    MAX_ATTEMPTS,
+    RAW_RESPONSE_JSON,
+    REQUEST_TIMEOUT,
+    RETRY_BACKOFF,
+)
 
 logger = logging.getLogger(__name__)
 
 
+async def request_once(client: httpx.AsyncClient, url: str) -> tuple[Any | None, str]:
+    """주소 1건을 1회 호출한다 (재시도·폴백 없음).
+
+    Args:
+        client: 재사용할 httpx 비동기 클라이언트
+        url   : 요청 주소
+
+    Returns:
+        (payload, "") 성공 / (None, 실패 사유) 실패
+    """
+    try:
+        response = await client.get(url, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        return response.json(), ""
+    except httpx.HTTPStatusError as e:  # 4xx·5xx 응답
+        return None, f"HTTP {e.response.status_code}"
+    except httpx.TimeoutException:  # 타임아웃
+        return None, f"timeout({REQUEST_TIMEOUT}s)"
+    except httpx.HTTPError as e:  # 연결 실패 등 나머지 통신 오류
+        return None, f"{type(e).__name__}: {e}"
+    except json.JSONDecodeError as e:  # 본문이 JSON이 아닌 경우
+        return None, f"JSON 파싱 실패: {e}"
+
+
+async def fetch_with_retry(
+    client: httpx.AsyncClient,
+    name: str,
+    url: str,
+    max_attempts: int = MAX_ATTEMPTS,
+) -> tuple[Any | None, str, int]:
+    """실패 시 지수 백오프로 재시도하며 같은 주소를 호출한다.
+
+    네트워크 오류·5xx는 대개 일시적이므로, 즉시 포기하지 않고 간격을 늘려 가며
+    다시 시도한다. 간격을 늘리는 이유는 장애 중인 서버에 요청을 몰아주지 않기 위해서다.
+
+    Args:
+        client      : 재사용할 httpx 비동기 클라이언트
+        name        : API 식별자 (로그 표기용)
+        url         : 요청 주소
+        max_attempts: 최대 시도 횟수 (최초 1회 포함)
+
+    Returns:
+        (payload, 실패 사유, 시도 횟수)
+    """
+    reason = ""
+    for attempt in range(1, max_attempts + 1):
+        payload, reason = await request_once(client, url)
+        if payload is not None:
+            if attempt > 1:
+                logger.info(f"[{name}] {attempt}회차 재시도에서 성공")
+            return payload, "", attempt
+
+        if attempt < max_attempts:
+            wait = RETRY_BACKOFF * 2 ** (attempt - 1)  # 0.5 → 1.0 → 2.0 …
+            logger.warning(
+                f"[{name}] {attempt}/{max_attempts}회차 실패({reason}) "
+                f"— {wait:.1f}s 후 재시도"
+            )
+            await asyncio.sleep(wait)
+
+    return None, reason, max_attempts
+
+
 async def fetch(client: httpx.AsyncClient, name: str, url: str) -> dict[str, Any]:
-    """단일 API를 호출해 JSON 응답을 반환한다.
+    """단일 API를 수집한다 — 재시도 후에도 실패하면 미러 주소로 전환한다.
 
     Args:
         client: 재사용할 httpx 비동기 클라이언트
         name  : API 식별자 (weather / country / ip)
-        url   : 요청 주소
+        url   : 1차 요청 주소
 
     Returns:
-        {'name', 'ok', 'elapsed', 'data'} 형태의 dict.
+        {'name', 'ok', 'elapsed', 'attempts', 'source', 'data'} 형태의 dict.
         실패 시 ok=False 이며 'error' 키에 사유가 담긴다.
+        source 는 실제로 응답을 받아낸 주소로, 미러 사용 여부를 사후에 확인할 수 있다.
     """
     started = time.perf_counter()
-    try:
-        response = await client.get(url, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPStatusError as e:  # 4xx·5xx 응답
-        reason = f"HTTP {e.response.status_code}"
-    except httpx.TimeoutException:  # 타임아웃
-        reason = f"timeout({REQUEST_TIMEOUT}s)"
-    except httpx.HTTPError as e:  # 연결 실패 등 나머지 통신 오류
-        reason = f"{type(e).__name__}: {e}"
-    except json.JSONDecodeError as e:  # 본문이 JSON이 아닌 경우
-        reason = f"JSON 파싱 실패: {e}"
-    else:
-        elapsed = time.perf_counter() - started
-        logger.info(f"[{name}] 수집 성공 ({elapsed:.2f}s)")
-        return {"name": name, "ok": True, "elapsed": elapsed, "data": payload}
+    payload, reason, attempts = await fetch_with_retry(client, name, url)
+    source = url
+
+    # 1차 주소가 끝내 실패했고 미러가 정의돼 있으면 대체 주소로 한 번 더 시도한다
+    mirror = API_MIRRORS.get(name)
+    if payload is None and mirror:
+        logger.warning(f"[{name}] 1차 주소 실패({reason}) — 미러로 전환: {mirror}")
+        payload, mirror_reason, mirror_attempts = await fetch_with_retry(
+            client, f"{name}:mirror", mirror
+        )
+        attempts += mirror_attempts
+        if payload is not None:
+            source = mirror
+        else:
+            reason = f"1차 {reason} / 미러 {mirror_reason}"
 
     elapsed = time.perf_counter() - started
-    logger.error(f"[{name}] 수집 실패 ({elapsed:.2f}s): {reason}")
-    return {"name": name, "ok": False, "elapsed": elapsed, "error": reason}
+    if payload is None:
+        logger.error(f"[{name}] 수집 실패 ({elapsed:.2f}s, {attempts}회 시도): {reason}")
+        return {
+            "name": name,
+            "ok": False,
+            "elapsed": elapsed,
+            "attempts": attempts,
+            "error": reason,
+        }
+
+    via = "" if source == url else " (미러 사용)"
+    logger.info(f"[{name}] 수집 성공 ({elapsed:.2f}s, {attempts}회 시도){via}")
+    return {
+        "name": name,
+        "ok": True,
+        "elapsed": elapsed,
+        "attempts": attempts,
+        "source": source,
+        "data": payload,
+    }
 
 
 async def fetch_all(endpoints: dict[str, str] | None = None) -> dict[str, Any]:

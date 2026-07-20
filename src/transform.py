@@ -75,10 +75,34 @@ def validate_country(payload: dict[str, Any]) -> tuple[CountryInfo | None, list[
     return info, []
 
 
+def normalize_ip_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """공급자마다 다른 IP 응답 키를 IpInfo 스키마 기준으로 통일한다.
+
+    1차(ip-api)와 미러(ipwho.is)는 같은 정보를 다른 키 이름으로 준다.
+    스키마를 공급자별로 나누는 대신 여기서 한 형태로 맞춰,
+    어느 쪽에서 받아오든 하류 코드가 동일하게 동작하도록 한다.
+
+        ip-api   : query / country / city / isp        / lat      / lon
+        ipwho.is : ip    / country / city / connection.isp / latitude / longitude
+    """
+    if "query" in payload:  # ip-api 형태는 그대로 사용
+        return payload
+
+    connection = payload.get("connection") or {}
+    return {
+        "query": payload.get("ip"),
+        "country": payload.get("country"),
+        "city": payload.get("city"),
+        "isp": connection.get("isp"),
+        "lat": payload.get("latitude"),
+        "lon": payload.get("longitude"),
+    }
+
+
 def validate_ip(payload: dict[str, Any]) -> tuple[IpInfo | None, list[dict]]:
-    """IP 위치 정보를 IpInfo로 검증한다."""
+    """IP 위치 정보를 IpInfo로 검증한다 (공급자별 키 차이는 먼저 정규화)."""
     try:
-        info = IpInfo(**payload)
+        info = IpInfo(**normalize_ip_payload(payload))
     except ValidationError as e:
         logger.warning(f"[ip] 검증 실패 — {e.error_count()}건")
         return None, [{"source": "ip", "row": 1, "error": str(e)}]
