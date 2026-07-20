@@ -185,6 +185,7 @@ def no_backoff_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     """재시도 대기를 건너뛰어 테스트가 백오프 시간만큼 지연되지 않게 한다."""
 
     async def instant(_seconds: float) -> None:
+        """asyncio.sleep 을 대신해 즉시 반환한다."""
         return None
 
     monkeypatch.setattr(collect.asyncio, "sleep", instant)
@@ -195,12 +196,14 @@ def test_fetch_with_retry_succeeds_after_failures() -> None:
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        """1·2회차는 503, 3회차부터 정상 응답을 돌려주는 가짜 서버."""
         calls["n"] += 1
         if calls["n"] < 3:  # 1·2회차는 서버 오류
             return httpx.Response(503)
         return httpx.Response(200, json={"ok": True})
 
     async def run() -> tuple:
+        """이벤트 루프 안에서 재시도 수집을 한 번 실행한다."""
         async with make_client(handler) as client:
             return await collect.fetch_with_retry(client, "test", "http://example.test")
 
@@ -214,9 +217,11 @@ def test_fetch_with_retry_gives_up_after_max_attempts() -> None:
     """계속 실패하면 최대 시도 횟수까지만 시도하고 사유를 반환해야 한다."""
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        """몇 번을 요청해도 500만 돌려주는 가짜 서버."""
         return httpx.Response(500)
 
     async def run() -> tuple:
+        """최대 시도 횟수를 2회로 제한해 실행한다."""
         async with make_client(handler) as client:
             return await collect.fetch_with_retry(
                 client, "test", "http://example.test", max_attempts=2
@@ -232,11 +237,13 @@ def test_fetch_falls_back_to_mirror() -> None:
     """1차 주소가 끝내 실패하면 미러 주소로 전환해 수집을 성공시켜야 한다."""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        """1차 주소는 연결 실패시키고 미러 주소만 응답하는 가짜 서버."""
         if request.url.host == "ip-api.com":  # 1차 주소는 항상 연결 실패
             raise httpx.ConnectTimeout("blocked", request=request)
         return httpx.Response(200, json=IPWHOIS_SAMPLE)
 
     async def run() -> dict:
+        """1차 주소로 수집을 시작해 미러 전환까지 거치게 한다."""
         async with make_client(handler) as client:
             return await collect.fetch(client, "ip", "http://ip-api.com/json/8.8.8.8")
 
