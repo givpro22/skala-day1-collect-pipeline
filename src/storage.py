@@ -71,7 +71,11 @@ def benchmark(
 
     rows = []
     for name, (write, read, path) in targets.items():
-        write()  # 읽기 측정 전에 파일이 반드시 존재하도록 1회 선행 저장
+        # 워밍업: 읽기 측정 전에 파일을 만들어 두고, 엔진(pyarrow 등)의 최초 로딩
+        # 비용을 측정 구간 밖으로 밀어낸다. 이 1회를 빼먹으면 첫 반복에 초기화
+        # 비용이 섞여 Parquet 읽기 시간이 실제보다 수십 배 크게 나온다.
+        write()
+        read()
         write_sec = timeit.timeit(write, number=repeat) / repeat
         read_sec = timeit.timeit(read, number=repeat) / repeat
         rows.append(
