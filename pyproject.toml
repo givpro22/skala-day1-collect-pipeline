@@ -1,0 +1,20 @@
+[project]
+name = "day1-collect-pipeline"
+version = "1.0.0"
+description = "SKALA Day1 종합 실습 — 공개 API 비동기 수집·검증·저장 파이프라인"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 92
+
+[tool.ruff.lint]
+# E: 스타일 에러 / F: 논리 오류 / I: import 정렬 / UP: 최신 문법 업그레이드
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
