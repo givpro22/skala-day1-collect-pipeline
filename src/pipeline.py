@@ -48,7 +48,7 @@ from src.config import (
     SCALED_PARQUET_PATH,
 )
 from src.storage import benchmark, save_errors, to_dataframe, verify_saved
-from src.transform import build_records
+from src.transform import build_records, validate_weather
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +62,28 @@ logger = logging.getLogger("pipeline")
 def section(title: str) -> None:
     """단계 구분선을 출력해 실행 결과 캡처의 가독성을 높인다."""
     print(f"\n{'=' * 70}\n {title}\n{'=' * 70}")
+
+
+def demo_validation_failure() -> None:
+    """검증 실패 경로가 실제로 동작하는지 잘못된 값을 주입해 확인한다.
+
+    실제 API 응답이 모두 정상이면 오류 분기가 한 번도 실행되지 않아
+    '예외 처리를 넣었다'는 사실만 남고 '동작한다'는 근거는 남지 않는다.
+    그래서 정상 1건 + 범위 초과 1건 + 타입 오류 1건을 일부러 넣어,
+    걸러진 건수와 사유를 출력한다. (저장 파일에는 영향을 주지 않는다)
+    """
+    section("[5] 예외 처리 시연 — 잘못된 값이 실제로 걸러지는지 확인")
+    broken = {
+        "hourly": {
+            "time": ["2026-07-20T00:00", "2026-07-20T01:00", "2026-07-20T02:00"],
+            "temperature_2m": [23.2, 22.9, "이십도"],  # 3행: 숫자가 아님 → 타입 오류
+            "precipitation_probability": [6, 150, 10],  # 2행: 0~100 초과 → 범위 오류
+        }
+    }
+    valid, errors = validate_weather(broken)
+    print(f"  주입 3건 → 통과 {len(valid)}건 / 차단 {len(errors)}건")
+    for item in errors:
+        print(f"  [차단] {item['row']}행 → {item['error']}")
 
 
 def main() -> int:
@@ -129,6 +151,9 @@ def main() -> int:
     section("[4] 저장 결과 재로딩 검증")
     verify_saved(len(records))
     print(f"  CSV·Parquet 모두 {len(records)}건으로 재로딩 확인")
+
+    # 5) 예외 처리 시연 ---------------------------------------------------------
+    demo_validation_failure()
 
     print("\n[OK] 파이프라인 정상 완료")
     return 0

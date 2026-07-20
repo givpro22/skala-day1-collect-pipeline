@@ -159,8 +159,8 @@ async def fetch_all(endpoints: dict[str, str] | None = None) -> dict[str, Any]:
     endpoints = endpoints or API_ENDPOINTS
     started = time.perf_counter()
 
-    # follow_redirects=True: http 요청이 https로 301 리다이렉트되는 API가 있어
-    # 리다이렉트를 추적하지 않으면 본문이 비어 JSON 파싱에 실패한다
+    # follow_redirects=True: 리다이렉트를 추적하지 않으면 본문이 비어 JSON 파싱에 실패한다
+    # (API가 주소 체계를 바꿔 301을 돌려주는 경우에 대한 대비)
     async with httpx.AsyncClient(follow_redirects=True) as client:
         tasks = [fetch(client, name, url) for name, url in endpoints.items()]
         # return_exceptions=True: 일부 실패해도 나머지 결과를 그대로 회수한다

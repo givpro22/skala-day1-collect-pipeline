@@ -34,13 +34,13 @@ TARGET_IP = "8.8.8.8"
 API_ENDPOINTS: dict[str, str] = {
     # 서울 3일치 시간대별 기온·강수확률
     "weather": (
-        "http://api.open-meteo.com/v1/forecast"
+        "https://api.open-meteo.com/v1/forecast"
         f"?latitude={SEOUL_LAT}&longitude={SEOUL_LON}"
         "&hourly=temperature_2m,precipitation_probability"
         "&forecast_days=3&timezone=Asia/Seoul"
     ),
-    # 한국 국가 정보 (http 요청 시 https로 301 리다이렉트되므로 추적 설정 필요)
-    "country": "http://countries.dev/alpha/KOR",
+    # 한국 국가 정보
+    "country": "https://countries.dev/alpha/KOR",
     # IP 기반 지역 정보
     "ip": f"http://ip-api.com/json/{TARGET_IP}",
 }
