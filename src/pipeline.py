@@ -58,6 +58,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pipeline")
 
+# httpx가 요청마다 남기는 INFO 로그는 우리 수집 로그와 내용이 겹친다.
+# 실행 화면에서 파이프라인 자체의 흐름이 묻히지 않도록 경고 이상만 남긴다.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 def section(title: str) -> None:
     """단계 구분선을 출력해 실행 결과 캡처의 가독성을 높인다."""
